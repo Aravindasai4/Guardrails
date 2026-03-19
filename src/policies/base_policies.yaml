@@ -1,0 +1,232 @@
+policies:
+  # 1) Block obvious sensitive keywords (input + output)
+  - id: "block_sensitive_keywords"
+    applies_to: ["input", "output"]
+    type: "keyword_match"
+    match:
+      - "password"
+      - "secret"
+      - "api_key"
+    action: "block"
+    severity: "high"
+
+  # 2) Mask email addresses on output instead of blocking
+  - id: "mask_email_addresses"
+    applies_to: ["output"]
+    type: "regex_replace"
+    pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    replacement: "[redacted email]"
+    action: "rewrite"
+    severity: "medium"
+
+  # 3) Just log potential leak phrases, don’t block
+  - id: "log_potential_confidential"
+    applies_to: ["output"]
+    type: "keyword_match"
+    match:
+      - "internal use only"
+      - "confidential"
+    action: "log_only"
+    severity: "low"
+
+  # 4) Hard block for weapons / bombs / flights (deterministic)
+  - id: "block_weapons_and_bombs"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "bomb"
+      - "explosive"
+      - "on flight"
+      - "airport security"
+      - "sneak more bombs"
+      - "sneak in more bombs"
+      - "make a bomb"
+      - "build a bomb"
+    action: "block"
+    severity: "critical"
+
+  # 5) External safety classifier — Unitary unbiased toxicity
+  - id: "toxicity_unbiased_unitary"
+    applies_to: ["input"]
+    type: "external_safety_api"
+    provider: "huggingface_toxicity"
+    model_name: "unitary/unbiased-toxic-roberta"
+    threshold: 0.5           # adjust after testing
+    action: "block"
+    severity: "high"
+
+  # 6) External safety classifier — s-nlp toxicity classifier
+  - id: "toxicity_snlp"
+    applies_to: ["input"]
+    type: "external_safety_api"
+    provider: "huggingface_toxicity"
+    model_name: "s-nlp/roberta_toxicity_classifier"
+    threshold: 0.5           # high score = toxic (same as Unitary)
+    action: "block"
+    severity: "high"
+  # 5) Social-engineering / fraud prompts - safe completion with alternatives
+  - id: "safe_social_engineering"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "wire transfer"
+      - "finance director"
+      - "spoofed email"
+      - "impersonate"
+      - "make employees believe"
+      - "convince the victim"
+      - "phishing email"
+      - "business email compromise"
+      - "ceo fraud"
+      - "bec"
+      - "send a wire"
+      - "wire"
+      - "urgent payment"
+      - "approve payment"
+      - "invoice urgent"
+      - "gift cards"
+      - "financial controls"
+      - "bypass controls"
+      - "impersonation email"
+    action: "safe_complete"
+    category: "social_engineering"
+    severity: "high"
+
+  # 6) Physical harm / crowd neutralization - safe completion with alternatives
+  - id: "safe_physical_harm_techniques"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "neutralize a larger gathering"
+      - "maximize overpressure"
+      - "sealed metal container"
+      - "crowd control using household materials"
+      - "disable security scanners"
+      - "bypass airport security"
+      - "shrapnel"
+      - "pressure vessel"
+      - "overpressure"
+      - "improvised device"
+    action: "safe_complete"
+    category: "physical_harm"
+    severity: "high"
+
+  # 7) Flag “disappear / avoid trace” planning (log only for now)
+  - id: "log_disappearance_planning"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "disappear permanently"
+      - "without leaving traces"
+      - "avoid being tracked"
+      - "evade law enforcement"
+    action: "log_only"
+    severity: "medium"
+
+  # 8) Data exfiltration attempts - safe completion with alternatives
+  - id: "safe_data_exfiltration"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "social security number"
+      - "SSN"
+      - "credit card number"
+      - "CVV"
+      - "PAN"
+      - "customer SSNs"
+      - "patient records"
+      - "PHI"
+      - "extract SSN"
+      - "dump SSN"
+      - "export SSN"
+      - "steal SSN"
+      - "exfiltrate"
+      - "extract customer"
+      - "dump customer"
+      - "export customer data"
+      - "steal customer"
+      - "extract patient"
+      - "dump patient"
+      - "steal patient"
+      - "credit card dump"
+      - "card numbers from"
+      - "export credit card"
+      - "extract credit card"
+    action: "safe_complete"
+    category: "data_exfiltration"
+    severity: "high"
+
+  # 9) Audit/detection evasion - safe completion with alternatives
+  - id: "safe_audit_evasion"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "without triggering audit"
+      - "without triggering audit logs"
+      - "avoid audit logs"
+      - "bypass audit"
+      - "disable audit"
+      - "evade detection"
+      - "avoid detection"
+      - "avoid detection by the SIEM"
+      - "bypass SIEM"
+      - "evade SIEM"
+      - "without being detected"
+      - "undetected access"
+      - "bypass logging"
+      - "disable logging"
+      - "without leaving logs"
+      - "without leaving traces"
+      - "cover your tracks"
+      - "hide the evidence"
+      - "avoid forensics"
+      - "disable monitoring"
+      - "bypass IDS"
+      - "evade IDS"
+    action: "safe_complete"
+    category: "data_exfiltration"
+    severity: "high"
+
+  # 10) Database extraction - safe completion with alternatives
+  - id: "safe_db_extraction"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "extract from database"
+      - "dump from database"
+      - "export from postgres"
+      - "extract from postgres"
+      - "dump postgres"
+      - "steal from database"
+      - "exfil from db"
+      - "data extraction script"
+      - "bulk export sensitive"
+      - "mass download records"
+    action: "safe_complete"
+    category: "data_exfiltration"
+    severity: "high"
+
+  # 11) Log high-risk exploit / privilege escalation topics
+  - id: "log_exploit_privesc"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "privilege escalation"
+      - "privesc"
+      - "token stealing"
+      - "process token"
+      - "DLL injection"
+      - "code injection into explorer.exe"
+    action: "log_only"
+    severity: "medium"
+
+  # 12) Log fictional self-harm / suicide themes
+  - id: "log_self_harm_fiction"
+    applies_to: ["input"]
+    type: "keyword_match"
+    match:
+      - "end everything"
+      - "kill myself"
+      - "suicide note"
+    action: "log_only"
+    severity: "medium"
