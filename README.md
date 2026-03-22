@@ -293,21 +293,31 @@ Jailbreak resistance currently relies on layered signals; advanced jailbreak det
 
 ## Project Status
 
-**Version:** v0.5  
-**State:** Production-style prototype
+**Version:** v0.5 → v1.0 in active development  
+**State:** Production-style prototype — being hardened into standalone software
 
-**Implemented**
-- Policy-as-code engine
-- Layered deterministic + ML safety
-- Safe completion logic
-- Auditable decision pipeline
-- Debug and observability hooks
+### ✅ Implemented (v0.5)
+- Policy-as-code engine (YAML-driven, hot-reloadable)
+- Layered deterministic + ML safety (keywords, regex, HuggingFace classifiers)
+- Graduated response model (block, rewrite, safe_complete, log_only)
+- Auditable Decision object with rule IDs, correlation IDs, ML metadata
+- Bidirectional evaluation (input pass + output pass)
+- Debug and observability endpoints
 
-**Planned**
-- Tenant-specific policy overrides
-- Metrics aggregation (policy hit rates)
-- ML-assisted social-engineering detection
-- Persistent audit log storage
+### 🔨 In Progress (v1.0 Roadmap)
+
+Guardrails++ is actively being developed into a fully standalone, deployable safety gateway. The following are being built:
+
+| Feature | Description | Status |
+|---|---|---|
+| **Real LLM proxying** | Live forwarding to OpenAI / Anthropic / Groq via pluggable provider adapter | 🔨 Building |
+| **API key authentication** | Bearer token auth + per-key tenant resolution | 🔨 Building |
+| **Rate limiting** | Redis-based token bucket per user + per tenant | 🔨 Building |
+| **Persistent audit logs** | Structured log storage with queryable decision history | 🔨 Building |
+| **Multi-tenant isolation** | Per-tenant policy overrides and scoped enforcement | 🔨 Building |
+| **Policy hit metrics** | Aggregated violation counts, block rates, rule performance | 🔨 Building |
+| **ML-assisted social engineering detection** | Intent classifier for fraud/BEC beyond keyword matching | 📋 Planned |
+| **Advanced jailbreak detection** | Semantic similarity + role-play injection resistance | 📋 Planned |
 
 ---
 
@@ -315,15 +325,13 @@ Jailbreak resistance currently relies on layered signals; advanced jailbreak det
 
 Guardrails++ v0.5 demonstrates AI safety architecture, governance controls, and decision semantics.
 
-The following production concerns are intentionally out of scope:
+The following production concerns are **actively being implemented** toward v1.0:
 
 - Authentication & authorization (API keys, RBAC)
 - Persistent audit log storage
 - Rate limiting & abuse throttling
 - Multi-tenant isolation
-- SLA-backed model serving
-
-These are documented as planned extensions to avoid overclaiming.
+- Real LLM provider proxying
 
 ---
 
@@ -331,16 +339,16 @@ These are documented as planned extensions to avoid overclaiming.
 
 Safety evaluation and policy enforcement are provider-agnostic.
 
-The current API layer assumes OpenAI-compatible chat semantics. Supporting additional providers (Anthropic, Mistral, local models) would require a thin request/response adapter—not policy changes.
+The current v0.5 API layer stubs the LLM call — the gateway architecture (policy evaluation, decision routing, response transformation) is fully functional. v1.0 will add a thin provider adapter supporting OpenAI-compatible endpoints, with Anthropic and Mistral adapters following.
 
-> **Note:** LLM backend integration is intentionally stubbed in v0.5. The gateway architecture — policy evaluation, decision routing, and response transformation — is fully functional. Swap in any OpenAI-compatible endpoint to enable live proxying.
+> Supporting additional providers requires only a request/response adapter — no policy changes needed.
 
 ---
 
 ## Intended Use
 
-Guardrails++ is intended as:
+Guardrails++ is being built as:
 
-- A portfolio demonstration of AI safety and governance engineering
-- A reference architecture for policy-driven LLM controls
-- A foundation for further research or production hardening
+- A **standalone deployable safety gateway** for any LLM-backed application
+- A **reference architecture** for policy-driven LLM controls
+- A **portfolio demonstration** of AI safety and governance engineering principles
