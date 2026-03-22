@@ -1,155 +1,346 @@
-# guardrails-
+# Guardrails++
 
-1. PROJECT OVERVIEW
-Core Purpose
-Guardrails++ is a policy-driven safety middleware gateway that intercepts LLM traffic at the API layer — screening both user prompts (input) and model responses (output) before either reaches its destination. The goal is to enforce organizational content policy without modifying the underlying model.
+**Policy-Driven AI Safety & Governance Gateway for LLM Applications**
 
-What It Detects and Prevents
+Guardrails++ is a production-style prototype AI safety gateway that sits between client applications and Large Language Models (LLMs), enforcing security, safety, and governance policies on both inputs and outputs.
 
-Social engineering and financial fraud (phishing, CEO fraud, BEC, wire transfer scams)
-Physical harm instructions (weapons, explosives, improvised devices)
-Data exfiltration attempts (SSN, PII, credit card dumps, patient records)
-Audit and detection evasion (bypassing SIEM, disabling logs)
-Sensitive credential exposure (passwords, API keys, secrets)
-General toxicity and harmful language (via ML classifiers)
-Self-harm and disappearance planning (logged for review)
-Problem It Solves
-Enterprise LLM deployments have no native content enforcement layer. Teams cannot audit what prompts go in, what responses come out, or which policy rule caused a rejection. Guardrails++ adds a governance layer between the user and the model with full traceability — every decision is explainable, every trigger is named.
+It is designed to mirror how enterprise AI safety systems operate in practice—combining policy-as-code, deterministic controls, machine-learning classifiers, and graduated response strategies (block, rewrite, safe_complete, log_only).
 
-How It Works at a High Level
-Every API call passes through a policy evaluation engine. The engine runs the text through a priority-ordered stack of deterministic rules (keywords, regex) and probabilistic ML classifiers. It returns one of three decisions — allow, transform, or block — with the exact rule IDs that fired.
+---
 
-2. TECHNICAL STACK
-Layer	Technology
-Web framework	FastAPI (Python)
-ASGI server	Uvicorn
-HTTP client	httpx (async)
-Data modeling	Pydantic v2
-Config / policy DSL	YAML (pyyaml)
-ML safety classifiers	HuggingFace Inference API
-Logging	Python logging + structured JSON
-Storage	None — stateless, no database
-ML Models Used
+## Why Guardrails++ Exists
 
-unitary/unbiased-toxic-roberta — A RoBERTa model fine-tuned on the Unbiased Toxicity dataset. Returns a toxicity probability score per input.
-s-nlp/roberta_toxicity_classifier — A second RoBERTa toxicity classifier used as an ensemble cross-check. Provides independent scoring to reduce both false positives and false negatives.
-Important clarification on the "NLI" framing: These models are transformer-based text classifiers, not NLI (Natural Language Inference) models in the strict sense. True NLI models classify entailment/contradiction between a premise and hypothesis. The models here perform single-sequence toxicity classification — scoring how likely a given text is harmful. The architecture is RoBERTa-based, which is a bidirectional transformer encoder.
+Most LLM safety examples rely on:
 
-Hosting / Deployment
-Models are hosted and served by HuggingFace's Inference API (router.huggingface.co). The application calls them over HTTPS at inference time — no local model loading, no GPU required. Authentication uses a bearer token (HF_API_TOKEN env var). A DemoSafetyClient fallback exists for offline testing.
+- a single classifier, or
+- binary allow/deny logic.
 
-3. GUARDRAILS IMPLEMENTATION
-Three Policy Types
+Real-world systems require more nuance:
 
-Type	How It Works
-keyword_match	Lowercased substring scan across a keyword list
-regex_replace	Compiled regex pattern match with optional substitution
-external_safety_api	Async HTTP call to HuggingFace; compares risk score against configurable threshold
-Content Categories Covered
+- Not all risky requests should be blocked
+- Some requests should be deflected, not refused
+- All decisions must be auditable
+- Policies must be reviewable, change-controlled, and reversible
 
-Category	Policy ID	Action
-Credential leakage	block_sensitive_keywords	Block
-Email PII in outputs	mask_email_addresses	Rewrite (redact)
-Confidential phrases	log_potential_confidential	Log only
-Weapons / explosives	block_weapons_and_bombs	Block
-Social engineering	safe_social_engineering	Safe completion
-Physical harm techniques	safe_physical_harm_techniques	Safe completion
-Data exfiltration	safe_data_exfiltration, safe_db_extraction	Safe completion
-Audit evasion	safe_audit_evasion	Safe completion
-Self-harm themes	log_self_harm_fiction	Log only
-Disappearance planning	log_disappearance_planning	Log only
-Toxicity (ML)	toxicity_unbiased_unitary, toxicity_snlp	Block
-Actions on Violation
+Guardrails++ addresses these requirements directly.
 
-block → Return HTTP 400 with rules_triggered[] list. Prompt never reaches the model.
-safe_complete → Return HTTP 200 with a curated deflection response specific to the category (social engineering, physical harm, data exfiltration, etc.). The user receives helpful context without the harmful content being generated.
-rewrite → Mutate the text in-place (e.g., redact email addresses) and continue the pipeline with the cleaned version.
-log_only → Flag for audit trail, allow the request to proceed.
-Bidirectional Monitoring
-Yes — the router runs two evaluation passes: one on the incoming user prompt (direction="input") and a second on the LLM response text (direction="output"). Output policies can catch model responses that slip through input filters.
+---
 
-4. ARCHITECTURE & WORKFLOW
-Data Flow
+## Project Structure
 
-User Request
-    │
-    ▼
-CorrelationIDMiddleware          ← assigns X-Correlation-ID UUID
-    │
-    ▼
+```
+src/
+└── guardrails_pp/
+    ├── api/
+    │   ├── router.py              # FastAPI routes + HTTP response mapping
+    │   └── schemas.py             # Pydantic request/response models
+    ├── core/
+    │   ├── config.py              # App configuration
+    │   └── logging.py             # Structured JSON logging
+    ├── externals/
+    │   └── huggingface_client.py  # HuggingFace Inference API wrapper
+    ├── integrations/
+    │   └── safety_client.py       # Safety client interface
+    ├── policy/
+    │   └── engine.py              # Policy evaluation engine (core)
+    ├── utils/
+    │   └── correlation.py         # Correlation ID middleware
+    ├── decision.py                # Decision dataclass
+    ├── safe_completion.py         # Category-specific deflection responses
+    └── main.py                    # App entrypoint
+policies/
+└── base_policies.yaml             # All safety rules (policy-as-code)
+```
+
+---
+
+## High-Level Architecture
+
+### Request Flow (Input → Output)
+
+```
+Client Request
+      │
+      ▼
+CorrelationIDMiddleware  ←  assigns X-Correlation-ID UUID
+      │
+      ▼
 POST /v1/chat/completions
-    │
-    ▼
-evaluate_policies_for_request()  ← INPUT pass
-    ├── keyword_match policies   (synchronous, sequential)
-    ├── regex_replace policies   (synchronous, sequential)
-    └── external_safety_api      (async parallel via asyncio.gather)
-    │
-    ▼
+      │
+      ▼
+evaluate_policies_for_request()  ←  INPUT pass
+  ├── keyword_match policies       (synchronous, sequential)
+  ├── regex_replace policies       (synchronous, sequential)
+  └── external_safety_api          (async parallel via asyncio.gather)
+      │
+      ▼
 Decision: allow / transform / block
-    │
-    ├── block    → 400 + rules_triggered[]
-    ├── safe_complete → 200 + category-specific deflection text
-    └── allow/rewrite → forward to LLM proxy
-                            │
-                            ▼
-                    evaluate_policies_for_request()  ← OUTPUT pass
-                            │
-                            ▼
-                    Final response returned to user
-Policy Engine Priority
-Deterministic rules (keyword, regex) run first synchronously. External ML classifiers run last in parallel via asyncio.gather() — only if no prior rule has already issued a block. This minimizes external API calls when a cheap keyword match would have been sufficient.
+      │
+  ┌───┴───────────────────┐
+  │                       │
+block → 400         safe_complete → 200
+rules_triggered[]   category deflection
+      │
+      ▼
+evaluate_policies_for_request()  ←  OUTPUT pass
+      │
+      ▼
+Final response with rule IDs + correlation ID
+```
 
-Decision Object
-Every evaluation returns a typed Decision dataclass:
+The gateway is LLM-agnostic at the policy and decision layer and does not assume a specific provider.
 
+---
+
+## Core Concepts
+
+### 1. Policy-as-Code (YAML)
+
+All safety logic is defined declaratively in YAML:
+
+- No safety logic hard-coded in request handlers
+- Policies are reviewable independently of code
+- Rollback is achieved by reverting configuration
+- Enables governance review and approval workflows
+
+Each policy specifies:
+
+- Scope (input / output)
+- Detection method (keyword, regex, ML classifier)
+- Severity
+- Action (block, rewrite, safe_complete, log_only)
+- Optional category (used for safe completion routing)
+
+### 2. Multi-Layer Safety Detection
+
+Guardrails++ intentionally combines deterministic rules with layered ML signals.
+
+**Deterministic Controls**
+- Keyword matching for high-confidence risks
+- Regex-based redaction (e.g., emails, secrets)
+- Explicit hard blocks for weapons, explosives, and security bypass attempts
+
+**ML-Based Classifiers (Layered)**
+- `unitary/unbiased-toxic-roberta`
+- `s-nlp/roberta_toxicity_classifier`
+
+Each classifier:
+- Uses an independent threshold
+- Is evaluated separately
+- Cannot override deterministic hard blocks
+
+This layered approach reduces both false negatives and over-reliance on any single model.
+
+> **Note on classifier architecture:** These are RoBERTa-based single-sequence toxicity classifiers, not NLI (Natural Language Inference) models in the strict sense. True NLI models classify entailment/contradiction between premise and hypothesis. The models here score how likely a given text is harmful.
+
+### 3. Graduated Response Model
+
+Guardrails++ does not treat all violations equally.
+
+| Action | Meaning |
+|---|---|
+| `block` | Reject request entirely (HTTP 400) |
+| `rewrite` | Modify content (e.g., redact PII) |
+| `safe_complete` | Replace response with a defensive, educational alternative |
+| `log_only` | Allow request while emitting audit signal |
+| `allow` | Pass through unchanged |
+
+This enables risk-appropriate handling rather than blanket denial.
+
+### 4. Safe Completion (Deflection, Not Censorship)
+
+For high-risk but potentially legitimate domains (e.g., social engineering, data exfiltration, audit evasion):
+
+- Requests are not answered operationally
+- Users receive high-level, defensive explanations
+- No procedural or actionable steps are provided
+
+This mirrors safety behavior in enterprise AI governance platforms, Trust & Safety systems, and responsible AI deployments.
+
+**Safe Completion Invariants**
+
+Safe completion responses are designed to:
+- Provide high-level explanations only
+- Avoid step-by-step or procedural instructions
+- Redirect toward prevention, ethics, or defensive understanding
+
+Templates are reviewed manually to ensure they do not enable harm.
+
+### 5. Structured Decision Object
+
+Every policy evaluation produces a `Decision` object containing:
+
+```python
 Decision(
-    decision: "allow" | "transform" | "block",
-    action: "pass_through" | "safe_completion" | "rewrite" | "reject",
-    rules_triggered: List[str],
-    rewritten_text: Optional[str],
-    metadata: Dict,        # includes external ML scores
-    status_code: int       # 200 or 400
+    decision:       "allow" | "transform" | "block",
+    action:         "pass_through" | "rewrite" | "safe_completion" | "reject",
+    rules_triggered: List[str],      # policy IDs that fired
+    rewritten_text:  Optional[str],
+    metadata:        Dict,           # ML scores, labels, debug context
+    status_code:     int             # 200 or 400
 )
-Logging and Auditing
+```
 
-CorrelationIDMiddleware generates a UUID per request, injects it into request.state, and returns it as X-Correlation-ID response header
-log_decision() writes a structured JSON log line per decision including correlation ID, method, path, status code, and duration in milliseconds
-External ML risk scores and labels are captured in decision.metadata["external_safety"] keyed by policy ID
-5. KEY FEATURES
-API Endpoints
+This structure enables auditing, observability, debugging, and downstream analytics. The API router maps decisions directly to HTTP responses, ensuring consistency between policy intent and runtime enforcement.
 
-Method	Endpoint	Purpose
-POST	/v1/chat/completions	Main gateway — evaluate and respond
-GET	/v1/debug/policies	List all loaded policies with metadata
-POST	/v1/debug/policies/reload	Hot-reload YAML without server restart
-GET	/v1/debug/eval?text=...&direction=input	Test evaluation against a raw string
-Configuration
+---
 
-All rules are defined in policies/base_policies.yaml — no code changes required to add or modify rules
-Per-policy threshold (ML classifiers), severity, action, and applies_to are all configurable in YAML
-Hot-reload via /v1/debug/policies/reload clears the in-memory cache and re-parses the YAML immediately
-Real-Time Processing
-Fully synchronous request/response. No batch processing or queue. External classifier calls are async and parallelized, with a 20-second timeout per HuggingFace request.
+## HTTP Behavior
 
-No Dashboard
-There is no UI. Observability is via structured JSON logs intended for ingestion into any log aggregation system (Datadog, Splunk, ELK, CloudWatch, etc.).
+| Scenario | HTTP Code | Reason |
+|---|---|---|
+| Hard safety violation | 400 | Request blocked |
+| Safe completion | 200 | Content intentionally transformed |
+| Rewrite / redaction | 200 | Content modified |
+| Log-only | 200 | Risk recorded, no user impact |
 
-6. IMPLEMENTATION HIGHLIGHTS
-Deterministic + Probabilistic Hybrid
-The most architecturally notable decision is layering deterministic rules (guaranteed, fast, auditable) with probabilistic ML scoring (catches novel harmful content that doesn't match any keyword). Deterministic rules always run first — if they block, the ML API call is skipped entirely, saving latency and cost.
+This distinction is intentional and required for real deployments.
 
-Safe Completion vs. Blocking
-Rather than hard-blocking everything suspicious, the system supports a safe_complete path that returns a curated, category-specific response. For example, a social engineering prompt gets a response that refuses the scam template but offers defender-perspective alternatives (DMARC controls, dual-approval workflows). This reduces friction for legitimate security training use cases while still preventing misuse.
+---
 
-Ensemble Toxicity Scoring
-Two independent RoBERTa toxicity classifiers run in parallel on every request that clears deterministic checks. Each has its own threshold. Either can independently trigger a block. This ensemble approach reduces reliance on any single model's blind spots.
+## Observability & Debugging
 
-Policy Isolation via applies_to
-Each policy explicitly declares whether it applies to input, output, or both. This prevents output-only rules (like email redaction) from incorrectly blocking user prompts, and prevents input-only rules from re-triggering on the LLM's own generated text.
+Guardrails++ includes:
 
-Fail-Open on ML Errors
-If the HuggingFace API is unreachable or returns an error, the safety client returns risk_score=0.0 and label="error". The engine treats this as below threshold and allows the request through rather than causing a service outage. This is an explicit operational tradeoff — availability over maximum safety — appropriate for middleware that should degrade gracefully.
+- Rule IDs returned to clients on every response
+- Correlation IDs (`X-Correlation-ID`) propagated through requests
+- Debug endpoints:
+  - `GET /v1/debug/policies` — list all loaded policies
+  - `POST /v1/debug/policies/reload` — hot-reload YAML without server restart
+  - `GET /v1/debug/eval?text=...&direction=input` — test evaluation against raw text
 
-Latency Consideration
-Deterministic rules add ~1ms. External ML calls add 300–2000ms depending on HuggingFace model warm-up state. The two classifiers run concurrently, so the latency cost is the slower of the two, not the sum. This is the primary performance bottleneck in the current design.
+These features support incident investigation, governance review, and policy tuning.
+
+---
+
+## Policy Rationale & Governance Model
+
+This section defines who controls policies, how changes are managed, and how risk is contained.
+
+**Policy Ownership**
+- AI Safety / Security Engineers define initial policies
+- Deterministic rules capture known high-risk patterns
+- ML thresholds are calibrated empirically
+
+**Change Control**
+- Policy updates are configuration changes
+- Reviewed via code review or change-management process
+- No application redeploy required for most updates
+
+**Blast Radius Control**
+
+Policies are scoped by direction (input vs output), action type, and category. A faulty rule affects only its matching scope.
+
+**Rollback Strategy**
+- Policies are version-controlled in Git
+- Rollback = revert YAML + hot-reload
+- No code changes required
+
+**Governance Alignment**
+
+This model aligns with:
+- NIST AI Risk Management Framework
+- EU AI Act expectations for high-risk systems
+- Enterprise Trust & Safety practices
+
+---
+
+## Evaluation & Testing
+
+Guardrails++ was evaluated using a curated prompt set designed to stress different policy categories.
+
+**Test Set**
+- ~40 prompts total
+- Categories: social engineering, data exfiltration, violence/weapons, privilege escalation, benign technical questions
+
+**Expected Outcomes**
+
+| Category | Allow | Block | Safe Complete | Log Only |
+|---|---|---|---|---|
+| Social Engineering | 0 | 0 | 8 | 0 |
+| Data Exfiltration | 0 | 0 | 6 | 0 |
+| Weapons | 0 | 5 | 0 | 0 |
+| Technical Malware | 6 | 0 | 0 | 4 |
+
+**Observations**
+- Deterministic rules provide high precision for known risks
+- ML classifiers catch abusive language missed by keywords
+- Some ambiguous prompts require threshold tuning
+
+---
+
+## Design Decisions & Tradeoffs
+
+**Precedence**
+Deterministic rules always win over ML signals; classifiers cannot override explicit hard blocks.
+
+**Fail-Open on ML Errors**
+If the HuggingFace API is unreachable, the safety client returns `risk_score=0.0`. The engine treats this as below threshold and allows the request through rather than causing a service outage. This is an explicit operational tradeoff — availability over maximum safety — appropriate for middleware that should degrade gracefully.
+
+**Change Control**
+Policies are versioned and hot-reloaded. Rollback requires reverting configuration, not code redeploy.
+
+**Auditability**
+Each decision returns rule IDs and metadata. Persistent audit storage is planned but not implemented in v0.5.
+
+**Threat Model**
+Known bypass vectors include paraphrasing, obfuscation, multilingual abuse, and role-play-based prompt injection.
+
+**Abuse Handling**
+Jailbreak resistance currently relies on layered signals; advanced jailbreak detection is planned.
+
+---
+
+## Project Status
+
+**Version:** v0.5  
+**State:** Production-style prototype
+
+**Implemented**
+- Policy-as-code engine
+- Layered deterministic + ML safety
+- Safe completion logic
+- Auditable decision pipeline
+- Debug and observability hooks
+
+**Planned**
+- Tenant-specific policy overrides
+- Metrics aggregation (policy hit rates)
+- ML-assisted social-engineering detection
+- Persistent audit log storage
+
+---
+
+## Production Readiness Scope
+
+Guardrails++ v0.5 demonstrates AI safety architecture, governance controls, and decision semantics.
+
+The following production concerns are intentionally out of scope:
+
+- Authentication & authorization (API keys, RBAC)
+- Persistent audit log storage
+- Rate limiting & abuse throttling
+- Multi-tenant isolation
+- SLA-backed model serving
+
+These are documented as planned extensions to avoid overclaiming.
+
+---
+
+## LLM Provider Abstraction
+
+Safety evaluation and policy enforcement are provider-agnostic.
+
+The current API layer assumes OpenAI-compatible chat semantics. Supporting additional providers (Anthropic, Mistral, local models) would require a thin request/response adapter—not policy changes.
+
+> **Note:** LLM backend integration is intentionally stubbed in v0.5. The gateway architecture — policy evaluation, decision routing, and response transformation — is fully functional. Swap in any OpenAI-compatible endpoint to enable live proxying.
+
+---
+
+## Intended Use
+
+Guardrails++ is intended as:
+
+- A portfolio demonstration of AI safety and governance engineering
+- A reference architecture for policy-driven LLM controls
+- A foundation for further research or production hardening
